@@ -16,6 +16,7 @@ import { reopenClosedConversation } from '@/lib/conversations/reopen'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
+import { dispatchInboundToHospitalDirectory } from '@/lib/hospital/directory'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { FLOW_AI_HANDOFF_MARKER } from '@/lib/flows/types'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
@@ -877,7 +878,11 @@ async function processMessage(
   // no active flows take the runner's early-exit "no_match" path
   // basically for free (one indexed SELECT for the active run).
   // ============================================================
-  const flowResult = await dispatchInboundToFlows({
+  // Hospital directory runs before generic Flows/automations/AI. When it
+  // consumes the message, the patient is navigating a deterministic hospital
+  // menu or submitting an appointment request, so no other responder should
+  // compete with it.
+  const hospitalResult = await dispatchInboundToHospitalDirectory({
     accountId,
     userId: configOwnerUserId,
     contactId: contactRecord.id,
@@ -886,17 +891,39 @@ async function processMessage(
       interactiveReplyId
         ? {
             kind: 'interactive_reply',
-            reply_id: interactiveReplyId,
-            reply_title: contentText ?? '',
-            meta_message_id: message.id,
+            replyId: interactiveReplyId,
+            replyTitle: contentText ?? '',
+            metaMessageId: message.id,
           }
         : {
             kind: 'text',
             text: contentText ?? message.text?.body ?? '',
-            meta_message_id: message.id,
+            metaMessageId: message.id,
           },
-    isFirstInboundMessage,
   })
+
+  const flowResult = hospitalResult.consumed
+    ? { consumed: true, outcome: hospitalResult.outcome }
+    : await dispatchInboundToFlows({
+        accountId,
+        userId: configOwnerUserId,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+        message:
+          interactiveReplyId
+            ? {
+                kind: 'interactive_reply',
+                reply_id: interactiveReplyId,
+                reply_title: contentText ?? '',
+                meta_message_id: message.id,
+              }
+            : {
+                kind: 'text',
+                text: contentText ?? message.text?.body ?? '',
+                meta_message_id: message.id,
+              },
+        isFirstInboundMessage,
+      })
   const flowConsumed = flowResult.consumed
 
   // Fire any automations that react to this webhook event. All dispatches
