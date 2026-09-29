@@ -902,7 +902,7 @@ async function processMessage(
   })
 
   const flowResult = hospitalResult.consumed
-    ? { consumed: true, outcome: hospitalResult.outcome as const }
+    ? { consumed: true, outcome: hospitalResult.outcome }
     : await dispatchInboundToFlows({
         accountId,
         userId: configOwnerUserId,
