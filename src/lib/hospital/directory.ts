@@ -64,34 +64,30 @@ interface Doctor {
 }
 
 interface Schedule {
-  day_of_week: number[];
+  days_of_week: number[];
   start_time: string | null;
   end_time: string | null;
   notes: string | null;
 }
 
-const TRIGGERS = [
+const TRIGGERS = new Set([
   "hi",
   "hello",
   "salam",
   "assalamualaikum",
   "menu",
-  "doctor",
-  "doctors",
   "find a doctor",
   "find doctor",
-  "hospital",
-  "appointment",
   "book appointment",
-];
+  "appointment",
+]);
 
 function normalize(value: string): string {
   return value.trim().toLowerCase().replace(/[’']/g, "");
 }
 
 function isHospitalTrigger(text: string): boolean {
-  const value = normalize(text);
-  return TRIGGERS.some((trigger) => value === trigger || value.includes(trigger));
+  return TRIGGERS.has(normalize(text));
 }
 
 function looksLikeMenu(text: string): boolean {
@@ -117,7 +113,7 @@ function formatTime(value: string | null): string {
 }
 
 function formatSchedule(schedule: Schedule): string {
-  const days = (schedule.day_of_week ?? []).map(dayLabel).join(", ");
+  const days = (schedule.days_of_week ?? []).map(dayLabel).join(", ");
   const start = formatTime(schedule.start_time);
   const end = schedule.end_time ? formatTime(schedule.end_time) : "onward";
   const note = schedule.notes ? ` — ${schedule.notes}` : "";
@@ -618,187 +614,3 @@ async function handleTextInSession(args: HospitalDispatchArgs, session: Hospital
         await sendHospitalText({ accountId: args.accountId, userId: args.userId, contactId: args.contactId, conversationId: args.conversationId, text: "Please enter the patient's full name." });
         return { consumed: true, outcome: "booking_started" };
       }
-      const next = await upsertSession(supabaseAdmin(), { accountId: args.accountId, conversationId: args.conversationId, appointment_step: "submitted", appointment_data: { ...session.appointment_data, name } });
-      if (!next) return { consumed: true, outcome: "human_handoff" };
-      return saveAppointment(args, next);
-    }
-  }
-
-  if (session.state === "departments") return showDepartments(args, session.page, "directory");
-  if (session.state === "doctors" && session.department_id) return showDoctors(args, session.department_id, session.page, "directory");
-  if (session.state === "booking_department") return showDepartments(args, session.page, "booking");
-  if (session.state === "booking_doctor" && session.department_id) return showDoctors(args, session.department_id, session.page, "booking");
-
-  return showMainMenu(args);
-}
-
-async function handleInteractive(args: HospitalDispatchArgs, session: HospitalSession | null): Promise<HospitalDispatchResult> {
-  const id = args.message.kind === "interactive_reply" ? args.message.replyId : "";
-  const db = supabaseAdmin();
-
-  if (id === "hospital:main") return showMainMenu(args);
-  if (id === "hospital:find_doctor") return showDepartments(args, 0, "directory");
-  if (id === "hospital:book") return showDepartments(args, 0, "booking");
-  if (id === "hospital:info") {
-    const settings = await getSettings(db, args.accountId);
-    await clearSession(db, args.conversationId);
-    await sendHospitalText({
-      accountId: args.accountId,
-      userId: args.userId,
-      contactId: args.contactId,
-      conversationId: args.conversationId,
-      text: `🏥 ${settings?.hospital_name ?? "Hospital"}\n\nHospital UAN: ${settings?.uan_phone ?? "Not listed"}\n\n${settings?.appointment_note ?? "Please confirm doctor timing with the hospital before travelling."}`,
-    });
-    await engineSendInteractiveButtons({
-      accountId: args.accountId,
-      userId: args.userId,
-      contactId: args.contactId,
-      conversationId: args.conversationId,
-      bodyText: "Return to the hospital menu?",
-      buttons: [{ id: "hospital:main", title: "Main Menu" }],
-    });
-    return { consumed: true, outcome: "hospital_info" };
-  }
-  if (id === "hospital:ai") return aiHandoff(args);
-  if (id === "hospital:reception") return humanHandoff(args, "A reception handoff has been requested. Please continue with the hospital reception team.");
-  if (id === "hospital:dept_change") return showDepartments(args, 0, session?.mode === "booking" ? "booking" : "directory");
-  if (id === "hospital:other_doctor" && session?.department_id) return showDoctors(args, session.department_id, 0, "directory");
-  if (id === "hospital:book_current" && session?.doctor_id) {
-    await upsertSession(db, { accountId: args.accountId, conversationId: args.conversationId, state: "appointment", mode: "booking", appointment_step: "date", appointment_data: {} });
-    await sendHospitalText({ accountId: args.accountId, userId: args.userId, contactId: args.contactId, conversationId: args.conversationId, text: "What date would you prefer?\nPlease use DD/MM/YYYY." });
-    return { consumed: true, outcome: "booking_started" };
-  }
-
-  let m = id.match(/^hospital:dept_next:(\d+)$/);
-  if (m) return showDepartments(args, Number(m[1]), session?.mode === "booking" ? "booking" : "directory");
-  m = id.match(/^hospital:dept_prev:(\d+)$/);
-  if (m) return showDepartments(args, Number(m[1]), session?.mode === "booking" ? "booking" : "directory");
-  m = id.match(/^hospital:dept:([0-9a-f-]{36})$/i);
-  if (m) return showDoctors(args, m[1], 0, session?.mode === "booking" ? "booking" : "directory");
-
-  m = id.match(/^hospital:doctor_next:([0-9a-f-]{36}):(\d+)$/i);
-  if (m && session?.department_id) return showDoctors(args, m[1], Number(m[2]), session.mode);
-  m = id.match(/^hospital:doctor_prev:([0-9a-f-]{36}):(\d+)$/i);
-  if (m && session?.department_id) return showDoctors(args, m[1], Number(m[2]), session.mode);
-  m = id.match(/^hospital:doctor:([0-9a-f-]{36})$/i);
-  if (m) return showDoctorDetail(args, m[1]);
-
-  return { consumed: Boolean(session), outcome: "no_match" };
-}
-
-export async function dispatchInboundToHospitalDirectory(args: HospitalDispatchArgs): Promise<HospitalDispatchResult> {
-  if (!ACCOUNT_ID_RE.test(args.accountId)) return { consumed: false, outcome: "no_match" };
-  const db = supabaseAdmin();
-  const settings = await getSettings(db, args.accountId);
-  if (!settings?.is_active) return { consumed: false, outcome: "no_match" };
-
-  const session = await getSession(db, args.conversationId);
-
-  if (args.message.kind === "interactive_reply" && args.message.replyId.startsWith("hospital:")) {
-    return handleInteractive(args, session);
-  }
-
-  if (args.message.kind === "text") {
-    if (isHospitalTrigger(args.message.text) && !session) return showMainMenu(args);
-    if (session) return handleTextInSession(args, session);
-  }
-
-  return { consumed: false, outcome: "no_match" };
-}
-
-export async function retrieveHospitalAiContext(
-  db: ReturnType<typeof supabaseAdmin>,
-  accountId: string,
-  query: string,
-): Promise<string[]> {
-  const { data: settings } = await db
-    .from("hospital_settings")
-    .select("hospital_name,uan_phone,appointment_note")
-    .eq("account_id", accountId)
-    .maybeSingle();
-  if (!settings) return [];
-
-  const { data: departments } = await db
-    .from("hospital_departments")
-    .select("id,name,short_name,sort_order")
-    .eq("account_id", accountId)
-    .eq("is_active", true)
-    .order("sort_order");
-
-  const { data: doctors } = await db
-    .from("hospital_doctors")
-    .select("id,display_name,appointment_phone,location,notes,sort_order,hospital_doctor_departments(hospital_departments(name,short_name)),hospital_doctor_schedules(days_of_week,start_time,end_time,notes)")
-    .eq("account_id", accountId)
-    .eq("is_active", true)
-    .order("sort_order")
-    .limit(120);
-
-  const aliases: Record<string, string[]> = {
-    heart: ["cardiology", "interventional cardiology", "cardiovascular"],
-    cardio: ["cardiology", "interventional cardiology", "cardiovascular"],
-    eyes: ["ophthalmology"],
-    skin: ["dermatology"],
-    kidney: ["nephrology"],
-    children: ["pediatrics", "pediatric"],
-    kids: ["pediatrics", "pediatric"],
-    bone: ["orthopedics"],
-    stomach: ["gastroenterology"],
-    liver: ["gastroenterology", "hepatology"],
-    cancer: ["oncology"],
-    throat: ["ent"],
-    hearing: ["audiology"],
-    speech: ["speech"],
-    diabetes: ["diabetes", "endocrinology"],
-    lung: ["pulmonology"],
-    breathing: ["pulmonology", "critical care"],
-    women: ["gynecology"],
-    pregnancy: ["gynecology"],
-    mental: ["psychology", "psychiatry"],
-  };
-  const q = normalize(query);
-  const terms = q.split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
-  const expanded = new Set<string>(terms);
-  for (const term of terms) for (const alias of aliases[term] ?? []) expanded.add(alias);
-
-  const ranked = ((doctors ?? []) as any[]).map((doctor) => {
-    const departmentNames = (doctor.hospital_doctor_departments ?? [])
-      .map((x: any) => x.hospital_departments?.name ?? "")
-      .join(" ");
-    const hay = normalize(`${doctor.display_name} ${departmentNames} ${doctor.location ?? ""} ${doctor.notes ?? ""}`);
-    let score = 0;
-    if (hay.includes(q) && q.length >= 4) score += 100;
-    for (const term of expanded) {
-      if (hay.includes(term)) score += 10;
-      if (term.length >= 6 && hay.includes(term.slice(0, 6))) score += 3;
-    }
-    return { doctor, score };
-  })
-  .filter((x) => x.score > 0)
-  .sort((a, b) => b.score - a.score || a.doctor.sort_order - b.doctor.sort_order)
-  .slice(0, 6);
-
-  const context: string[] = [
-    `Hospital: ${settings.hospital_name}`,
-    `Hospital UAN: ${settings.uan_phone ?? "Not listed"}`,
-    `Appointment note: ${settings.appointment_note ?? "Confirm timings with the hospital."}`,
-  ];
-  if (ranked.length === 0) {
-    context.push(`Departments: ${(departments ?? []).map((d: any) => d.name).join(", ")}`);
-    context.push("No exact doctor/schedule match was found for the customer's wording. Do not invent a doctor or appointment time; hand off if an exact answer is needed.");
-    return context;
-  }
-
-  for (const item of ranked) {
-    const doctor = item.doctor;
-    const deps = (doctor.hospital_doctor_departments ?? [])
-      .map((x: any) => x.hospital_departments?.name ?? "")
-      .filter(Boolean)
-      .join(", ");
-    const schedules = (doctor.hospital_doctor_schedules ?? []).map((s: Schedule) => formatSchedule(s)).join("; ");
-    context.push(
-      `Doctor: ${doctor.display_name}; Departments: ${deps || "Not listed"}; Schedules: ${schedules || "Not listed"}; Appointment phone: ${doctor.appointment_phone ?? "Not listed"}; Location: ${doctor.location ?? "Not listed"}; Notes: ${doctor.notes ?? "None"}`,
-    );
-  }
-  context.push("The hospital directory above is the source of truth for doctor names and schedules. Never infer or invent availability.");
-  return context;
-}
