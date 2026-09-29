@@ -427,7 +427,7 @@ async function showDoctorDetail(
     userId: args.userId,
     contactId: args.contactId,
     conversationId: args.conversationId,
-    text: `Dr. ${doctor.display_name.replace(/^Dr\.\s*/i, "")}\n\nConsultation timings:\n${scheduleText}${extra ? `\n\n${extra}` : ""}`,
+    text: `${doctor.display_name}\n\nConsultation timings:\n${scheduleText}${extra ? `\n\n${extra}` : ""}`,
   });
 
   await engineSendInteractiveButtons({
