@@ -142,19 +142,23 @@ export async function dispatchInboundToAiReply(
 
     // Ground the reply in the account's knowledge base (best-effort).
     const knowledgeStartedAt = Date.now()
-    const knowledge = await retrieveKnowledge(
-      db,
-      accountId,
-      config,
-      latestUserMessage(messages),
-    )
+    const [hospitalContext, knowledge] = await Promise.all([
+      retrieveHospitalAiContext(db, accountId, latestUserMessage(messages)),
+      retrieveKnowledge(
+        db,
+        accountId,
+        config,
+        latestUserMessage(messages),
+      ),
+    ])
+    const groundedKnowledge = [...hospitalContext, ...knowledge]
 
-    console.info(`[ai auto-reply] knowledge ready conversation=${conversationId} ms=${Date.now() - knowledgeStartedAt} items=${knowledge.length}`)
+    console.info(`[ai auto-reply] knowledge ready conversation=${conversationId} ms=${Date.now() - knowledgeStartedAt} items=${groundedKnowledge.length} (hospital=${hospitalContext.length}, kb=${knowledge.length})`)
 
     const systemPrompt = buildSystemPrompt({
       userPrompt: config.systemPrompt,
       mode: 'auto_reply',
-      knowledge,
+      knowledge: groundedKnowledge,
     })
 
     const aiStartedAt = Date.now()
